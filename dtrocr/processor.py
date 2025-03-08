@@ -4,10 +4,13 @@ from PIL import Image
 from typing import List, Union
 from config import DTrOCRConfig
 from data import DTrOCRProcessorOutput
+import torch
+import numpy as np
 
 
 class DTrOCRProcessor:
     def __init__(self, config: DTrOCRConfig, add_bos_token: bool = False, add_eos_token: bool = False):
+        self.config = config
         self.vit_processor = AutoImageProcessor.from_pretrained(
             config.vit_hf_model,
             size={
@@ -31,6 +34,20 @@ class DTrOCRProcessor:
             self.tokeniser
         )
 
+        # DINO-specific image preprocessing (ImageNet normalization)
+        self.mean = [0.485, 0.456, 0.406]  # ImageNet mean
+        self.std = [0.229, 0.224, 0.225]  # ImageNet std
+
+    def preprocess_image(self, image: Image.Image) -> torch.Tensor:
+        """Preprocess an image for DINO input."""
+        # Resize to config.image_size
+        image = image.resize((self.config.image_size[1], self.config.image_size[0]), Image.BILINEAR)
+        # Convert to tensor and normalize
+        image = torch.tensor(np.array(image)).permute(2, 0, 1).float() / 255.0  # [C, H, W]
+        for c in range(3):
+            image[c] = (image[c] - self.mean[c]) / self.std[c]
+        return image
+
     def __call__(
         self,
         images: Union[Image.Image, List[Image.Image]] = None,
@@ -45,12 +62,16 @@ class DTrOCRProcessor:
             texts, padding=padding, *args, **kwargs
         ) if texts is not None else None
 
-        image_inputs = self.vit_processor(
-            images, input_data_format=input_data_format, *args, **kwargs
-        ) if images is not None else None
+        if images is not None:
+            if isinstance(images, Image.Image):
+                pixel_values = self.preprocess_image(images).unsqueeze(0)  # [1, C, H, W]
+            else:
+                pixel_values = torch.stack([self.preprocess_image(img) for img in images])  # [B, C, H, W]
+        else:
+            pixel_values = None
 
         return DTrOCRProcessorOutput(
-            pixel_values=image_inputs["pixel_values"] if images is not None else None,
+            pixel_values=pixel_values,
             input_ids=text_inputs['input_ids'] if texts is not None else None,
             attention_mask=text_inputs['attention_mask'] if texts is not None else None,
             labels=text_inputs['input_ids'] if texts is not None and return_labels else None

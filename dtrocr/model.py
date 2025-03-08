@@ -25,7 +25,13 @@ class DTrOCRModel(nn.Module):
     def __init__(self, config: DTrOCRConfig):
         super().__init__()
         # embeddings
-        self.patch_embeddings = ViTPatchEmbeddings(config)
+        # Custom patch embeddings for DINO (patch_size=16x16, hidden_size=384)
+        self.patch_embeddings = nn.Conv2d(
+            in_channels=config.num_channels,
+            out_channels=config.hidden_size,
+            kernel_size=config.patch_size,
+            stride=config.patch_size
+        )
         self.token_embedding = nn.Embedding(config.vocab_size, config.hidden_size)
         self.positional_embedding = nn.Embedding(config.max_position_embeddings, config.hidden_size)
 
@@ -119,9 +125,14 @@ class DTrOCRModel(nn.Module):
         # load pre-trained GPT-2
         pretrained_gpt2 = GPT2Model.from_pretrained(config.gpt2_hf_model)
 
-        # copy hidden layer weights
+        # Copy hidden layer weights (adjust for hidden_size mismatch if necessary)
         for hidden_layer, pretrained_hidden_layer in zip(self.hidden_layers, pretrained_gpt2.h):
-            hidden_layer.load_state_dict(pretrained_hidden_layer.state_dict())
+            # If hidden sizes differ, we need to project weights
+            pretrained_state_dict = pretrained_hidden_layer.state_dict()
+            for name, param in pretrained_state_dict.items():
+                if 'weight' in name and param.shape[-1] == 768:  # GPT-2 default hidden size
+                    pretrained_state_dict[name] = nn.Linear(768, config.hidden_size, bias=False)(param.T).T
+            hidden_layer.load_state_dict(pretrained_state_dict)
 
         # token embeddings
         self.token_embedding.load_state_dict(pretrained_gpt2.wte.state_dict())
