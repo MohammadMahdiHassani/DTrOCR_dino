@@ -63,7 +63,11 @@ class DTrOCRModel(nn.Module):
         else:
             past_length = past_key_values[0][0].size(-2)
 
-        patch_embeddings = self.patch_embeddings(pixel_values) if past_length == 0 else None
+        if past_length == 0:
+            patch_embeddings = self.patch_embeddings(pixel_values)  # [B, hidden_size, H/patch, W/patch]
+            patch_embeddings = patch_embeddings.flatten(2).transpose(1, 2)  # [B, num_patches, hidden_size]
+        else:
+            patch_embeddings = None
         token_embeddings = self.token_embedding(input_ids)
 
         if patch_embeddings is not None:
@@ -122,20 +126,24 @@ class DTrOCRModel(nn.Module):
         return DTrOCRModelOutput(hidden_states=hidden_states, past_key_values=presents)
 
     def initialise_weights(self, config: DTrOCRConfig) -> None:
-        # load pre-trained GPT-2
+        # Load pre-trained GPT-2
         pretrained_gpt2 = GPT2Model.from_pretrained(config.gpt2_hf_model)
 
-        # Copy hidden layer weights (adjust for hidden_size mismatch if necessary)
+        # Project GPT-2 weights from 768 to 384 where necessary
+        projection_layer = nn.Linear(768, config.hidden_size, bias=False)
+
         for hidden_layer, pretrained_hidden_layer in zip(self.hidden_layers, pretrained_gpt2.h):
-            # If hidden sizes differ, we need to project weights
             pretrained_state_dict = pretrained_hidden_layer.state_dict()
             for name, param in pretrained_state_dict.items():
-                if 'weight' in name and param.shape[-1] == 768:  # GPT-2 default hidden size
-                    pretrained_state_dict[name] = nn.Linear(768, config.hidden_size, bias=False)(param.T).T
+                if 'weight' in name and param.shape[-1] == 768:  # Project from 768 to 384
+                    pretrained_state_dict[name] = projection_layer(param.T).T
+                elif 'weight' in name and param.shape[0] == 768:  # For output weights
+                    pretrained_state_dict[name] = projection_layer(param)
             hidden_layer.load_state_dict(pretrained_state_dict)
 
-        # token embeddings
-        self.token_embedding.load_state_dict(pretrained_gpt2.wte.state_dict())
+        # Project token embeddings from 768 to 384
+        projected_token_weight = projection_layer(pretrained_gpt2.wte.weight.T).T
+        self.token_embedding.load_state_dict({'weight': projected_token_weight})
 
 
 class DTrOCRLMHeadModel(nn.Module):
