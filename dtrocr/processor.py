@@ -11,14 +11,7 @@ import numpy as np
 class DTrOCRProcessor:
     def __init__(self, config: DTrOCRConfig, add_bos_token: bool = False, add_eos_token: bool = False):
         self.config = config
-        self.vit_processor = AutoImageProcessor.from_pretrained(
-            config.vit_hf_model,
-            size={
-                "height": config.image_size[0],
-                'width': config.image_size[1]
-            },
-            use_fast=True
-        )
+        
         self.tokeniser = GPT2Tokenizer.from_pretrained(
             config.gpt2_hf_model,
             add_bos_token=add_bos_token,
